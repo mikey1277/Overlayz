@@ -54,34 +54,36 @@ class WindowCaptureManager {
     private var lastCaptureImage: CGImage?
     private init() {}
 
-    // MARK: - Public Async APIs
-
-    /// Capture a specific window by its ID.
+    //// Window based capture
     public func captureWindow(_ windowID: CGWindowID) async -> CGImage? {
         do {
-            let availableContent = try await SCShareableContent
+            let windowContent = try await SCShareableContent
                 .excludingDesktopWindows(false, onScreenWindowsOnly: true)
-            guard let window = availableContent.windows.first(
+            
+            guard let window = windowContent.windows.first(
                 where: { $0.windowID == windowID }
             ) else {
-                print("Window with ID \(windowID) not found")
                 return nil
             }
+            
             return await captureWithFilter(
                 SCContentFilter(desktopIndependentWindow: window)
             )
+            
         } catch {
-            print("Error getting shareable content: \(error)")
+            print("This window specific content not getting: \(error)")
             return nil
         }
     }
 
-    /// Capture the main display if no window is found.
+    /// This captures the main display
     public func captureMainDisplay() async -> CGImage? {
+        
         do {
-            let availableContent = try await SCShareableContent
+            let mainDisplay = try await SCShareableContent
                 .excludingDesktopWindows(false, onScreenWindowsOnly: true)
-            guard let display = availableContent.displays.first else {
+            
+            guard let display = mainDisplay.displays.first else {
                 print("No displays available")
                 return nil
             }
@@ -90,6 +92,7 @@ class WindowCaptureManager {
                 excludingApplications: [],
                 exceptingWindows: []
             )
+            
             return await captureWithFilter(filter)
         } catch {
             print("Error getting shareable content: \(error)")
@@ -97,16 +100,19 @@ class WindowCaptureManager {
         }
     }
 
-    /// Perform OCR on a captured image.
+    /// For the image data gotten from above --> do OCR
     public func performOCR(on image: CGImage) async -> [OCRResult] {
         await withCheckedContinuation { continuation in
             let imageSize = CGSize(width: image.width, height: image.height)
             let handler = VNImageRequestHandler(cgImage: image)
+                                       
             let request = VNRecognizeTextRequest { request, error in
-                let results: [OCRResult]
+                let ocrResults: [OCRResult]
+                                                  
                 if let observations = request.results as? [VNRecognizedTextObservation] {
                     var counter = 0
-                    results = observations.compactMap { obs in
+                    
+                    ocrResults = observations.compactMap { obs in
                         guard let candidate = obs.topCandidates(1).first else { return nil }
                         let rect = VNImageRectForNormalizedRect(
                             obs.boundingBox,
@@ -129,17 +135,18 @@ class WindowCaptureManager {
                         )
                     }
                 } else {
-                    results = []
+                    ocrResults = []
                 }
-                continuation.resume(returning: results)
+                continuation.resume(returning: ocrResults)
             }
             request.recognitionLanguages = ["en-US"]
             request.recognitionLevel = .accurate
             request.revision = VNRecognizeTextRequestRevision3
+                                       
             do {
                 try handler.perform([request])
             } catch {
-                print("Unable to perform OCR: \(error)")
+                print("Not able to do OCR: \(error)")
                 continuation.resume(returning: [])
             }
         }
@@ -155,98 +162,100 @@ class WindowCaptureManager {
         return []
     }
 
-    // MARK: - Private Async Capture Helper
-
-    /// Internal filter-based capture returning a single frame.
-    private func captureWithFilter(_ filter: SCContentFilter) async -> CGImage? {
-        // Stop any existing capture stream
-        do{
+    private func captureWithFilter(_ contentFilter: SCContentFilter) async -> CGImage? {
+        // Clean up any existing capture stream
+        do {
             try await stopCapture()
             
-            // Stream configuration
-            let configuration = SCStreamConfiguration()
-            configuration.capturesAudio = false
-            configuration.showsCursor = false
+            // Configure stream settings
+            let streamConfiguration = SCStreamConfiguration()
+            streamConfiguration.capturesAudio = false
+            streamConfiguration.showsCursor = false
             
-            // Derive width/height from the filter's content rectangle
-            let contentRect = filter.contentRect
-            let scale = filter.pointPixelScale
-            if contentRect.width > 0 && contentRect.height > 0 {
-                configuration.width  = Int(contentRect.width  * CGFloat(scale))
-                configuration.height = Int(contentRect.height * CGFloat(scale))
+            // Calculate optimal capture dimensions based on content
+            let filterContentRect = contentFilter.contentRect
+            let pixelScale = contentFilter.pointPixelScale
+            
+            if filterContentRect.width > 0 && filterContentRect.height > 0 {
+                streamConfiguration.width = Int(filterContentRect.width * CGFloat(pixelScale))
+                streamConfiguration.height = Int(filterContentRect.height * CGFloat(pixelScale))
             } else {
-                configuration.width  = 1920
-                configuration.height = 1080
+                // Fallback to default resolution
+                streamConfiguration.width = 1920
+                streamConfiguration.height = 1080
             }
-            configuration.minimumFrameInterval = CMTime(value: 1, timescale: 30)
-            configuration.queueDepth = 3
             
-            // Prepare stream output
-            let streamOutput = StreamOutput()
-            self.streamOutput = streamOutput
+            streamConfiguration.minimumFrameInterval = CMTime(value: 1, timescale: 30)
+            streamConfiguration.queueDepth = 3
             
-            // Ensure stream is stopped if this Task is cancelled
-            let image = await withCheckedContinuation { (continuation: CheckedContinuation<CGImage?, Never>) in
-                var didResume = false
-                var capturedImage: CGImage? = nil
+            // Initialize stream output handler
+            let captureStreamOutput = StreamOutput()
+            self.streamOutput = captureStreamOutput
+            
+            // Capture the frame with timeout handling
+            let capturedFrame = await withCheckedContinuation { (frameContinuation: CheckedContinuation<CGImage?, Never>) in
+                var hasResumedContinuation = false
+                var frameImage: CGImage? = nil
                 
-                // Timeout after 3 seconds
-                let timeoutWorkItem = DispatchWorkItem {
-                    guard !didResume else { return }
-                    didResume = true
-                    continuation.resume(returning: capturedImage)
+                // Set up timeout to prevent indefinite waiting
+                let timeoutTask = DispatchWorkItem {
+                    guard !hasResumedContinuation else { return }
+                    hasResumedContinuation = true
+                    frameContinuation.resume(returning: frameImage)
                 }
-                DispatchQueue.main.asyncAfter(deadline: .now() + 3, execute: timeoutWorkItem)
+                DispatchQueue.main.asyncAfter(deadline: .now() + 3, execute: timeoutTask)
                 
-                // Frame capture handler
-                streamOutput.captureHandler = { image in
-                    guard !didResume else { return }
-                    didResume = true
-                    capturedImage = image
-                    timeoutWorkItem.cancel()
-                    continuation.resume(returning: image)
+                // Configure frame capture callback
+                captureStreamOutput.captureHandler = { capturedImage in
+                    guard !hasResumedContinuation else { return }
+                    hasResumedContinuation = true
+                    frameImage = capturedImage
+                    timeoutTask.cancel()
+                    frameContinuation.resume(returning: capturedImage)
                 }
                 
-                // Start the stream asynchronously
-                
+                // Initialize and start the capture stream
                 do {
-                    let stream = SCStream(filter: filter,
-                                          configuration: configuration,
-                                          delegate: nil)
-                    try stream.addStreamOutput(streamOutput,
-                                               type: .screen,
-                                               sampleHandlerQueue: .main)
-                    stream.startCapture { error in
-                        if let error = error {
-                            if !didResume {
-                                didResume = true
-                                timeoutWorkItem.cancel()
-                                continuation.resume(returning: nil)
+                    let captureStream = SCStream(filter: contentFilter,
+                                               configuration: streamConfiguration,
+                                               delegate: nil)
+                    
+                    try captureStream.addStreamOutput(captureStreamOutput,
+                                                    type: .screen,
+                                                    sampleHandlerQueue: .main)
+                    
+                    captureStream.startCapture { startError in
+                        if let startError = startError {
+                            if !hasResumedContinuation {
+                                hasResumedContinuation = true
+                                timeoutTask.cancel()
+                                frameContinuation.resume(returning: nil)
                             }
-                            print("Failed to start capture: \(error)")
+                            print("Failed to start capture: \(startError)")
                         } else {
-                            self.stream = stream
+                            self.stream = captureStream
                         }
                     }
                 } catch {
-                    if !didResume {
-                        didResume = true
-                        timeoutWorkItem.cancel()
-                        continuation.resume(returning: nil)
+                    if !hasResumedContinuation {
+                        hasResumedContinuation = true
+                        timeoutTask.cancel()
+                        frameContinuation.resume(returning: nil)
                     }
                 }
             }
 
+            // Brief delay to ensure capture completion
             try await Task.sleep(for: .milliseconds(100))
             try await stopCapture()
-            return image
-        }
-        catch{
+            return capturedFrame
+            
+        } catch {
             return nil
         }
     }
 
-    /// Stop and clean up any ongoing capture stream.
+    /// Cleanup function for streams
     private func stopCapture() async throws{
         try await stream?.stopCapture()
         stream = nil
@@ -255,31 +264,44 @@ class WindowCaptureManager {
     }
 }
 
-// Private SCStreamOutput implementation
+/// The class to represent stream outputs of the image data
 private class StreamOutput: NSObject, SCStreamOutput {
     var captureHandler: ((CGImage?) -> Void)?
+    
     func stream(
-        _ stream: SCStream,
+        _ captureStream: SCStream,
         didOutputSampleBuffer sampleBuffer: CMSampleBuffer,
-        of type: SCStreamOutputType
+        of outputType: SCStreamOutputType
     ) {
-        guard type == .screen,
-              let handler = captureHandler,
-              sampleBuffer.isValid,
-              let attachmentsArray = CMSampleBufferGetSampleAttachmentsArray(
+        // Only process screen output type
+        guard outputType == .screen,
+              let frameHandler = captureHandler,
+              sampleBuffer.isValid else { 
+            return 
+        }
+        
+        // Extract frame attachments and validate status
+        guard let sampleAttachmentsArray = CMSampleBufferGetSampleAttachmentsArray(
                 sampleBuffer,
                 createIfNecessary: false
               ) as? [[SCStreamFrameInfo: Any]],
-              let attachments = attachmentsArray.first,
-              let statusRaw = attachments[SCStreamFrameInfo.status] as? Int,
-              let status = SCFrameStatus(rawValue: statusRaw),
-              status == .complete,
-              let buffer = CMSampleBufferGetImageBuffer(sampleBuffer)
-        else { return }
-        let ciImage = CIImage(cvPixelBuffer: buffer)
-        let context = CIContext()
-        if let cgImage = context.createCGImage(ciImage, from: ciImage.extent) {
-            handler(cgImage)
+              let frameAttachments = sampleAttachmentsArray.first,
+              let frameStatusRaw = frameAttachments[SCStreamFrameInfo.status] as? Int,
+              let frameStatus = SCFrameStatus(rawValue: frameStatusRaw),
+              frameStatus == .complete else { 
+            return 
+        }
+        
+        // Extract pixel buffer and convert to CGImage
+        guard let pixelBuffer = CMSampleBufferGetImageBuffer(sampleBuffer) else { 
+            return 
+        }
+        
+        let coreImage = CIImage(cvPixelBuffer: pixelBuffer)
+        let imageContext = CIContext()
+        
+        if let finalCGImage = imageContext.createCGImage(coreImage, from: coreImage.extent) {
+            frameHandler(finalCGImage)
         }
     }
 }
