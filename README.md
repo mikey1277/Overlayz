@@ -8,6 +8,12 @@ I guess you could use it for cheating, but please follow honor codes (hacking vs
 
 Uses our backend for now, but you can substitute in yours.
 
+## Feedback / Contributing
+
+Please (reach out to me)[https://x.com/taayjus]
+
+Looking for people who want to build a solid, great product instead of releasing hundreds of clones.
+
 ## AI Context Manager
 
 Handles getting OCR / screenshot
