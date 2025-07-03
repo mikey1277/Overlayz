@@ -16,6 +16,9 @@ To contribute or with feedback, pls [reach out to me](https://x.com/tejastheshar
 
 This has been available under a non-commercial license to benefit the public.
 
+If you want to commercialize, I am not sure what would be ethical, but feel
+free to reach out to discuss your particular use case.
+
 ## AI Context Manager
 
 Handles getting OCR / screenshot
