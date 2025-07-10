@@ -1,8 +1,10 @@
-## Horizon Overlay: Open Source Cluely
+## Overlayz: Open Source Cluely
 
-A positive AI overlay to empower you. Private, detection-free window. 
+A positive AI overlay to empower you. Private, detection-free window.
 
-For the free direct download: https://www.onhorizon.ai/
+Overlayz is maintained by [Pattern Automation](https://patternautomation.com).
+
+For the free direct download: https://patternautomation.com/
 
 
 <img width="494" alt="image" src="https://github.com/user-attachments/assets/e8db03f4-9365-449c-a845-e01b9440e42d" />
